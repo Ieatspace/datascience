@@ -8,7 +8,7 @@ env/
 .DS_Store
 Thumbs.db
 
-out/
+
 
 # Optional local build/cache artifacts
 *.log
