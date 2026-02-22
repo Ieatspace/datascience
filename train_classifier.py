@@ -70,16 +70,27 @@ def load_labels():
     if not LABELS_CSV.exists():
         raise FileNotFoundError("out/labels.csv not found. Run label_chars.py first.")
 
-    items = []
+    available_files = {p.name for p in CHARS_DIR.glob("*.png")} if CHARS_DIR.exists() else set()
+    latest_labels = {}
+    missing_count = 0
     with open(LABELS_CSV, "r", newline="") as f:
         reader = csv.reader(f)
         next(reader, None)
         for row in reader:
             if len(row) >= 2:
-                items.append((row[0], row[1]))
+                fname, label = row[0], row[1]
+                if available_files and fname not in available_files:
+                    missing_count += 1
+                    continue
+                latest_labels[fname] = label
+
+    items = list(latest_labels.items())
 
     if not items:
         raise ValueError("out/labels.csv is empty. Label some characters first.")
+
+    if missing_count:
+        print(f"Warning: skipped {missing_count} stale labels for missing image files.")
 
     random.shuffle(items)
     return items
@@ -92,7 +103,7 @@ def preflight_checks():
         print(f"  {Path(sys.executable).name} extract_chars.py")
         return False
 
-    char_files = list(CHARS_DIR.glob("char_*.png"))
+    char_files = list(CHARS_DIR.glob("*.png"))
     if not char_files:
         print("No character crops found in out/chars.")
         print("Run this first:")

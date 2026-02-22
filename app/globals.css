@@ -1,0 +1,129 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 30 20% 97%;
+    --foreground: 222 30% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 30% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 30% 12%;
+    --primary: 212 45% 26%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 32% 95%;
+    --secondary-foreground: 222 30% 15%;
+    --muted: 210 28% 94%;
+    --muted-foreground: 215 18% 40%;
+    --accent: 203 35% 92%;
+    --accent-foreground: 220 35% 20%;
+    --destructive: 0 72% 49%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 214 25% 88%;
+    --input: 214 25% 88%;
+    --ring: 212 45% 35%;
+    --radius: 0.9rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    min-height: 100%;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+    font-family:
+      var(--font-sans),
+      ui-sans-serif,
+      system-ui,
+      sans-serif;
+    background-image:
+      radial-gradient(circle at 12% 14%, rgba(174, 196, 220, 0.3), transparent 42%),
+      radial-gradient(circle at 86% 10%, rgba(220, 207, 189, 0.35), transparent 38%),
+      radial-gradient(circle at 60% 88%, rgba(180, 202, 194, 0.28), transparent 42%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='%230f172a' fill-opacity='0.02'%3E%3Ccircle cx='8' cy='12' r='1'/%3E%3Ccircle cx='68' cy='44' r='1'/%3E%3Ccircle cx='102' cy='25' r='1'/%3E%3Ccircle cx='29' cy='81' r='1'/%3E%3Ccircle cx='121' cy='102' r='1'/%3E%3Ccircle cx='54' cy='117' r='1'/%3E%3C/g%3E%3C/svg%3E"),
+      linear-gradient(180deg, #f7f4ee 0%, #f1f5f9 100%);
+    background-attachment: fixed;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family:
+      var(--font-serif),
+      ui-serif,
+      Georgia,
+      serif;
+    letter-spacing: -0.02em;
+  }
+
+  ::selection {
+    background: rgba(59, 130, 246, 0.18);
+    color: inherit;
+  }
+}
+
+@layer utilities {
+  .surface-glass {
+    background: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(10px);
+  }
+
+  .noise-overlay {
+    position: relative;
+  }
+
+  .noise-overlay::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    border-radius: inherit;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cg fill='%230f172a' fill-opacity='0.018'%3E%3Ccircle cx='8' cy='17' r='1'/%3E%3Ccircle cx='34' cy='58' r='1'/%3E%3Ccircle cx='71' cy='41' r='1'/%3E%3Ccircle cx='94' cy='96' r='1'/%3E%3Ccircle cx='121' cy='28' r='1'/%3E%3Ccircle cx='144' cy='128' r='1'/%3E%3Ccircle cx='57' cy='138' r='1'/%3E%3C/g%3E%3C/svg%3E");
+    opacity: 0.85;
+  }
+
+  .skeleton-shimmer {
+    background-image: linear-gradient(
+      90deg,
+      rgba(226, 232, 240, 0.7) 0%,
+      rgba(241, 245, 249, 1) 50%,
+      rgba(226, 232, 240, 0.7) 100%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.3s linear infinite;
+  }
+
+  .subtle-grid {
+    background-image:
+      linear-gradient(to right, rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(148, 163, 184, 0.08) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .section-chip {
+    @apply inline-flex items-center gap-2 rounded-full border border-border/70 bg-background/80 px-3 py-1 text-xs font-medium text-muted-foreground;
+  }
+
+  .card-accent {
+    position: relative;
+  }
+
+  .card-accent::after {
+    content: "";
+    position: absolute;
+    inset: 0 auto auto 0;
+    height: 3px;
+    width: 100%;
+    border-top-left-radius: inherit;
+    border-top-right-radius: inherit;
+    background: linear-gradient(90deg, rgba(59, 130, 246, 0.25), rgba(234, 179, 8, 0.2), rgba(16, 185, 129, 0.2));
+    pointer-events: none;
+  }
+}

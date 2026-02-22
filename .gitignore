@@ -12,3 +12,14 @@ Thumbs.db
 
 # Optional local build/cache artifacts
 *.log
+
+# Next.js / Node.js
+node_modules/
+.next/
+coverage/
+.turbo/
+
+# Test artifacts
+vitest-report/
+.env.local
+.env.*.local
