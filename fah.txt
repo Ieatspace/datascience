@@ -1,0 +1,7 @@
+git add .
+git commit -m "description"
+git push origin "branch name"
+git branch
+
+
+copy the string
