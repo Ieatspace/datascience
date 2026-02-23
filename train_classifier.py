@@ -1,7 +1,21 @@
 import csv
+import importlib.util
+import os
 import random
 import sys
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+os.chdir(SCRIPT_DIR)
+
+# If launched with the wrong interpreter (common in VS Code/PowerShell), re-run
+# with the project's local venv so imports like `torch` resolve consistently.
+if importlib.util.find_spec("torch") is None and os.environ.get("TC_REEXEC") != "1":
+    venv_python = SCRIPT_DIR / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        env = os.environ.copy()
+        env["TC_REEXEC"] = "1"
+        os.execve(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]], env)
 
 import numpy as np
 from PIL import Image
