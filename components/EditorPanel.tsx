@@ -16,7 +16,7 @@ import { cn } from "@/lib/utils";
 
 const PROMPT_SUGGESTIONS = [
   "Meet me by the library at 5:30 pm.",
-  "Sincerely,\nAashi",
+  "Sincerely,\nAashif",
   "The rain tapped softly against the window as the tea cooled."
 ] as const;
 
@@ -55,8 +55,8 @@ export function EditorPanel({
         </div>
         <CardDescription>
           Type the text to render as handwritten output. Use{" "}
-          <span className="font-medium text-foreground">Ctrl/Cmd + Enter</span>{" "}
-          to generate.
+          <span className="font-medium text-foreground">Ctrl + Enter</span> to
+          generate.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -121,7 +121,10 @@ export function EditorPanel({
 
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="section-chip">Cmd/Ctrl + Enter</span>
+            <span className="section-chip">Ctrl + Enter</span>
+            <span className="text-xs text-muted-foreground">
+              (Cmd + Enter on Mac)
+            </span>
             <Button
               type="button"
               variant="ghost"
@@ -165,7 +168,7 @@ export function EditorPanel({
         >
           {error
             ? error
-            : "Stub mode is active. The UI, history, and export flows are production-ready; only the generator implementation is placeholder."}
+            : "This preview experience is production-ready. Rendering quality will keep improving as the handwriting engine evolves."}
         </div>
       </CardContent>
     </Card>

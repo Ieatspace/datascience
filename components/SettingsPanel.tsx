@@ -62,8 +62,7 @@ export function SettingsPanel({
           <span className="section-chip hidden sm:inline-flex">Metadata</span>
         </div>
         <CardDescription>
-          These values are sent to <code>/api/generate</code> and returned in the
-          response payload.
+          Tune style, size, spacing, and seed behavior for each generated preview.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

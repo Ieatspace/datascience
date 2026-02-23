@@ -1,4 +1,4 @@
-import { Circle, Command, PenTool, WandSparkles } from "lucide-react";
+import { Circle, Keyboard, PenTool, WandSparkles } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
@@ -57,8 +57,8 @@ export function TopNav({ isLoading, historyCount, hasResult }: TopNavProps) {
           </div>
 
           <div className="section-chip bg-white/80">
-            <Command className="h-3.5 w-3.5" />
-            <span>+ Enter to generate</span>
+            <Keyboard className="h-3.5 w-3.5" />
+            <span>Ctrl + Enter</span>
           </div>
         </div>
       </div>

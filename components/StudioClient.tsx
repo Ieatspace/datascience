@@ -220,7 +220,7 @@ export function StudioClient() {
             Session
           </p>
           <p className="mt-1 text-lg font-semibold text-foreground">
-            {result ? "Active preview" : "Awaiting first render"}
+            {result ? "Active preview" : "Create your first preview"}
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             {history.length > 0

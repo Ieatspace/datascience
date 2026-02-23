@@ -14,31 +14,31 @@ export default function HomePage() {
         <div className="mb-5 rounded-2xl border border-white/60 bg-white/50 p-4 shadow-sm backdrop-blur-sm noise-overlay sm:p-5">
           <div className="grid gap-4 lg:grid-cols-[1.1fr_0.9fr] lg:items-center">
             <div>
-              <p className="section-chip w-fit">Prototype Workspace</p>
+              <p className="section-chip w-fit">Handwrite Studio</p>
               <h2 className="mt-3 text-2xl font-semibold text-slate-900 sm:text-3xl">
-                Handwriting generation UI shell, ready for model integration
+                A polished handwriting generation workspace
               </h2>
               <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground sm:text-base">
-                Build and validate the product experience now. The renderer is a
-                placeholder, but the API contract, history workflow, and preview
-                tooling are production-shaped.
+                Create previews, compare history, and export images in a clean
+                production-style interface while the handwriting engine continues to
+                improve.
               </p>
             </div>
             <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
               <div className="rounded-xl border border-border/70 bg-white/75 p-3">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                  Mode
+                  Status
                 </p>
                 <p className="mt-1 text-sm font-semibold text-foreground">
-                  Stub Renderer
+                  In Development
                 </p>
               </div>
               <div className="rounded-xl border border-border/70 bg-white/75 p-3">
                 <p className="text-xs uppercase tracking-[0.14em] text-muted-foreground">
-                  Contract
+                  Workflow
                 </p>
                 <p className="mt-1 text-sm font-semibold text-foreground">
-                  Typed + Validated
+                  Generate + Review
                 </p>
               </div>
               <div className="rounded-xl border border-border/70 bg-white/75 p-3">
@@ -56,8 +56,8 @@ export default function HomePage() {
         <StudioClient />
 
         <footer className="mt-8 pb-2 text-center text-xs text-muted-foreground">
-          Handwrite Studio shell • swap the generator later without changing the
-          frontend request contract
+          Handwrite Studio | polished UI experience with an evolving handwriting
+          engine
         </footer>
       </div>
     </main>

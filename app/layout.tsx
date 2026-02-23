@@ -17,7 +17,7 @@ const fraunces = Fraunces({
 
 export const metadata: Metadata = {
   title: "Handwrite Studio",
-  description: "Shell UI for handwriting generation with a stub image renderer."
+  description: "Handwriting generation workspace with a polished preview experience."
 };
 
 export default function RootLayout({

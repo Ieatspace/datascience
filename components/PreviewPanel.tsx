@@ -58,14 +58,18 @@ export function PreviewPanel({
               Preview
             </CardTitle>
             <CardDescription>
-              Server-rendered placeholder PNG. Replace the stub in{" "}
-              <code>app/api/generate/route.ts</code> later with your model call.
+              Review the generated handwriting preview, export the image, and inspect
+              generation details.
             </CardDescription>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <span className="section-chip bg-white/80">
-              {isLoading ? "Rendering..." : hasImage ? "Ready to export" : "Awaiting render"}
+              {isLoading
+                ? "Rendering..."
+                : hasImage
+                  ? "Ready to export"
+                  : "Create a preview"}
             </span>
             <Button
               type="button"
@@ -170,8 +174,8 @@ export function PreviewPanel({
                         Generate a sample preview
                       </p>
                       <p className="mt-1">
-                        The placeholder renderer simulates paper texture and letter
-                        jitter so the layout behaves like a real handwriting model.
+                        Generate your first preview to see the current handwriting
+                        style and export options in action.
                       </p>
                     </div>
                   </div>
@@ -195,7 +199,7 @@ export function PreviewPanel({
                 </span>
               </div>
               <pre className="max-h-[420px] overflow-auto p-4 text-xs leading-relaxed text-slate-100">
-              {debugPayload}
+                {debugPayload}
               </pre>
             </div>
           </TabsContent>
