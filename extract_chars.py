@@ -4,12 +4,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-IMAGE_PATH = Path(r"data/page_3_ghi.jpg")
+IMAGE_PATH = Path(r"data/page_15_mbpc.jpeg")
 OUT_DIR = Path("out/chars")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 SOFT_DOT_MERGE = False
 DOTTED_LETTER_MODE = False
 AGGRESSIVE_DOTTED_CROP_MODE = False
+GENTLE_SCAN_MODE = True
 
 
 def threshold_image(image_bgr):
@@ -20,7 +21,7 @@ def threshold_image(image_bgr):
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
         15,
-        12,
+        6 if GENTLE_SCAN_MODE else 12,
     )
     return gray, thresh
 
@@ -30,54 +31,78 @@ def make_char_filename(idx: int) -> str:
     return f"{page_tag}_char_{idx:06d}.png"
 
 
+def find_text_line_boxes_projection(thresh):
+    """Row-projection line detection that handles sparse practice rows (e.g., repeated 'l')."""
+    h, w = thresh.shape
+    ink = (thresh > 0).astype(np.uint8)
+
+    row_counts = ink.sum(axis=1).astype(np.float32)
+    smooth_span = 5
+    row_counts = np.convolve(
+        row_counts,
+        np.ones(smooth_span, dtype=np.float32) / float(smooth_span),
+        mode="same",
+    )
+
+    if DOTTED_LETTER_MODE:
+        min_row_ink = max(16 if GENTLE_SCAN_MODE else 25, int((0.006 if GENTLE_SCAN_MODE else 0.008) * w))
+        min_band_h = max(8, int(0.008 * h))
+        min_line_w = max(40, int(0.06 * w))
+    else:
+        # Lower thresholds keep thin/sparse rows from being dropped.
+        min_row_ink = max(8 if GENTLE_SCAN_MODE else 12, int((0.0035 if GENTLE_SCAN_MODE else 0.004) * w))
+        min_band_h = max(5 if GENTLE_SCAN_MODE else 8, int((0.004 if GENTLE_SCAN_MODE else 0.006) * h))
+        min_line_w = max(30 if GENTLE_SCAN_MODE else 40, int((0.03 if GENTLE_SCAN_MODE else 0.08) * w))
+
+    active = row_counts > min_row_ink
+
+    # Bridge small gaps caused by faint strokes so one practice row stays a single band.
+    max_gap = max(10 if GENTLE_SCAN_MODE else 4, int(0.004 * h if GENTLE_SCAN_MODE else 0.002 * h))
+    i = 0
+    while i < h:
+        if active[i]:
+            i += 1
+            continue
+        j = i
+        while j < h and not active[j]:
+            j += 1
+        if i > 0 and j < h and (j - i) <= max_gap and active[i - 1] and active[j]:
+            active[i:j] = True
+        i = j
+
+    boxes = []
+    y = 0
+    while y < h:
+        if not active[y]:
+            y += 1
+            continue
+        y1 = y
+        while y < h and active[y]:
+            y += 1
+        y2 = y
+        if (y2 - y1) < min_band_h:
+            continue
+
+        band = ink[y1:y2, :]
+        col_counts = band.sum(axis=0)
+        active_cols = np.where(col_counts > (0 if GENTLE_SCAN_MODE else 1))[0]
+        if active_cols.size == 0:
+            continue
+
+        x1 = int(active_cols[0])
+        x2 = int(active_cols[-1]) + 1
+        if (x2 - x1) < min_line_w:
+            continue
+        boxes.append((x1, y1, x2 - x1, y2 - y1))
+
+    boxes.sort(key=lambda b: (b[1], b[0]))
+    return boxes
+
+
 def find_text_line_boxes(thresh):
     h, w = thresh.shape
     if DOTTED_LETTER_MODE:
-        ink = (thresh > 0).astype(np.uint8)
-        row_counts = ink.sum(axis=1).astype(np.float32)
-        row_counts = np.convolve(row_counts, np.ones(5, dtype=np.float32) / 5.0, mode="same")
-        active = row_counts > max(25, int(0.008 * w))
-
-        # Only bridge tiny gaps; line crop padding will handle the i/j dot above the stem.
-        max_gap = max(4, int(0.002 * h))
-        i = 0
-        while i < h:
-            if active[i]:
-                i += 1
-                continue
-            j = i
-            while j < h and not active[j]:
-                j += 1
-            if i > 0 and j < h and (j - i) <= max_gap and active[i - 1] and active[j]:
-                active[i:j] = True
-            i = j
-
-        boxes = []
-        min_band_h = max(10, int(0.01 * h))
-        y = 0
-        while y < h:
-            if not active[y]:
-                y += 1
-                continue
-            y1 = y
-            while y < h and active[y]:
-                y += 1
-            y2 = y
-            if (y2 - y1) < min_band_h:
-                continue
-
-            band = ink[y1:y2, :]
-            col_counts = band.sum(axis=0)
-            active_cols = np.where(col_counts > 1)[0]
-            if active_cols.size == 0:
-                continue
-
-            x1 = int(active_cols[0])
-            x2 = int(active_cols[-1]) + 1
-            boxes.append((x1, y1, x2 - x1, y2 - y1))
-
-        boxes.sort(key=lambda b: (b[1], b[0]))
-        return boxes
+        return find_text_line_boxes_projection(thresh)
 
     kernel_w = max(25, w // 30)
     kernel_h = 7 if DOTTED_LETTER_MODE else 3
@@ -101,6 +126,12 @@ def find_text_line_boxes(thresh):
         boxes.append((x, y, bw, bh))
 
     boxes.sort(key=lambda b: (b[1], b[0]))
+    if GENTLE_SCAN_MODE and not DOTTED_LETTER_MODE:
+        # In practice pages with sparse/diagonal strokes (x/y/z), contour-based merging often
+        # returns fragmented "line" blobs. Prefer row-projection bands when available.
+        projection_boxes = find_text_line_boxes_projection(thresh)
+        if projection_boxes:
+            return projection_boxes
     return boxes
 
 
@@ -114,8 +145,12 @@ def extract_char_boxes_from_line(line_bin):
         stem_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
         cleaned = cv2.dilate(cleaned, stem_kernel, iterations=1)
     else:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        cleaned = cv2.morphologyEx(line_bin, cv2.MORPH_OPEN, kernel, iterations=1)
+        if GENTLE_SCAN_MODE:
+            # Preserve thin single-stroke letters (especially 'l') and rely on area filters for noise removal.
+            cleaned = line_bin.copy()
+        else:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            cleaned = cv2.morphologyEx(line_bin, cv2.MORPH_OPEN, kernel, iterations=1)
 
     if SOFT_DOT_MERGE:
         # Light vertical close helps reconnect dotted letters (i/j) without heavy over-merge.
@@ -129,9 +164,18 @@ def extract_char_boxes_from_line(line_bin):
     for i in range(1, num_labels):
         x, y, bw, bh, area = stats[i]
 
-        min_area = 6 if SOFT_DOT_MERGE else 20
-        min_h = max(2, int(0.05 * h)) if SOFT_DOT_MERGE else max(6, int(0.20 * h))
-        min_w = 2 if SOFT_DOT_MERGE else 3
+        if SOFT_DOT_MERGE:
+            min_area = 6
+            min_h = max(2, int(0.05 * h))
+            min_w = 2
+        elif GENTLE_SCAN_MODE:
+            min_area = 5
+            min_h = max(2, int(0.05 * h))
+            min_w = 1
+        else:
+            min_area = 20
+            min_h = max(6, int(0.20 * h))
+            min_w = 3
 
         if area < min_area:
             continue
@@ -139,7 +183,8 @@ def extract_char_boxes_from_line(line_bin):
             continue
         if bw < min_w:
             continue
-        if bw > 0.50 * w:
+        max_component_width_ratio = 0.75 if GENTLE_SCAN_MODE else 0.50
+        if bw > max_component_width_ratio * w:
             continue
 
         boxes.append((x, y, bw, bh))

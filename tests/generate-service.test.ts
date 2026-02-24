@@ -93,14 +93,14 @@ describe("FastAPI integration helpers", () => {
     ).toThrow(UpstreamGenerateError);
   });
 
-  it("defaults to stub backend when no proxy env vars are set", () => {
+  it("defaults to local backend when no proxy env vars are set", () => {
     const previousProvider = process.env.HANDWRITE_PROVIDER;
     const previousUrl = process.env.FASTAPI_GENERATE_URL;
 
     delete process.env.HANDWRITE_PROVIDER;
     delete process.env.FASTAPI_GENERATE_URL;
 
-    expect(getConfiguredGeneratorBackend()).toBe("stub");
+    expect(getConfiguredGeneratorBackend()).toBe("local");
 
     if (previousProvider === undefined) {
       delete process.env.HANDWRITE_PROVIDER;

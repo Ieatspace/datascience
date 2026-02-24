@@ -24,7 +24,7 @@ import pytesseract
 # -----------------------
 # Config
 # -----------------------
-DEFAULT_IMAGE_PATH = r"data/page_4_i.jpg"
+DEFAULT_IMAGE_PATH = r"data/page_8_klm.jpg"
 PHYSICAL_WIDTH_INCHES = 8.0
 
 
