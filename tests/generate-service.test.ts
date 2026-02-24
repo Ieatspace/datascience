@@ -31,6 +31,21 @@ describe("generateRequestSchema", () => {
 
     expect(parsed.success).toBe(false);
   });
+
+  it("accepts optional letter-model tuning fields without breaking the base contract", () => {
+    const parsed = generateRequestSchema.safeParse({
+      ...DEFAULT_GENERATE_REQUEST,
+      text: "hello world",
+      letterModelEnabled: true,
+      letterModelStyleStrength: 1.2,
+      letterModelBaselineJitter: 0.9,
+      letterModelWordSlant: 1.1,
+      letterModelRotationJitter: 0.8,
+      letterModelInkVariation: 0.2
+    });
+
+    expect(parsed.success).toBe(true);
+  });
 });
 
 describe("generateHandwritingStub", () => {

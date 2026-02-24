@@ -18,7 +18,13 @@ export const generateRequestSchema = z.object({
     .int()
     .min(0)
     .max(2_147_483_647)
-    .nullable()
+    .nullable(),
+  letterModelEnabled: z.boolean().optional(),
+  letterModelStyleStrength: z.number().min(0.25).max(3).optional(),
+  letterModelBaselineJitter: z.number().min(0).max(3).optional(),
+  letterModelWordSlant: z.number().min(0).max(3).optional(),
+  letterModelRotationJitter: z.number().min(0).max(3).optional(),
+  letterModelInkVariation: z.number().min(0).max(1).optional()
 });
 
 export const generateResponseSchema = z.object({

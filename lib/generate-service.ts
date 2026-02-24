@@ -7,7 +7,7 @@ import {
 import { renderHandwritingPlaceholderPng } from "@/lib/handwriting-stub";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { z } from "zod";
@@ -103,6 +103,19 @@ export function getLocalPythonExecutable(): string {
 
 export function getLocalPythonGeneratorScript(): string {
   return envString("HANDWRITE_LOCAL_SCRIPT") ?? "generate_handwriting_page.py";
+}
+
+export function getLocalLetterModelWeightsPath(): string {
+  return envString("HANDWRITE_LOCAL_LETTER_MODEL_PATH") ?? path.join("out", "letter_gen.pt");
+}
+
+export function getLocalLetterModelAutoEnable(): boolean {
+  const raw = envString("HANDWRITE_LOCAL_USE_LETTER_MODEL");
+  if (!raw) {
+    return true;
+  }
+  const normalized = raw.toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 export function getLocalPythonTimeoutMs(): number {
@@ -223,6 +236,15 @@ async function runLocalProcess(
   });
 }
 
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function generateHandwritingViaFastApi(
   request: GenerateRequest
 ): Promise<GenerateResponse> {
@@ -322,6 +344,33 @@ export async function generateHandwritingViaLocalPython(
   // Use classifier scoring by default when the model exists. Allow opt-out for faster local iteration.
   if (envString("HANDWRITE_LOCAL_USE_CLASSIFIER") !== "0") {
     args.push("--use-classifier");
+  }
+
+  const letterModelEnabledByRequest = request.letterModelEnabled !== false;
+  const letterModelWeightsPath = getLocalLetterModelWeightsPath();
+  const shouldUseLetterModel =
+    letterModelEnabledByRequest &&
+    getLocalLetterModelAutoEnable() &&
+    (await pathExists(letterModelWeightsPath));
+
+  if (shouldUseLetterModel) {
+    args.push("--use-letter-model", "--letter-model-weights", letterModelWeightsPath);
+
+    if (typeof request.letterModelStyleStrength === "number") {
+      args.push("--letter-style-strength", String(request.letterModelStyleStrength));
+    }
+    if (typeof request.letterModelBaselineJitter === "number") {
+      args.push("--baseline-jitter", String(request.letterModelBaselineJitter));
+    }
+    if (typeof request.letterModelWordSlant === "number") {
+      args.push("--word-slant", String(request.letterModelWordSlant));
+    }
+    if (typeof request.letterModelRotationJitter === "number") {
+      args.push("--letter-rot-jitter", String(request.letterModelRotationJitter));
+    }
+    if (typeof request.letterModelInkVariation === "number") {
+      args.push("--ink-variation", String(request.letterModelInkVariation));
+    }
   }
 
   try {

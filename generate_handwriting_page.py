@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent
 LABELS_CSV = ROOT / "out" / "labels.csv"
 CHARS_DIR = ROOT / "out" / "chars"
 MODEL_PATH = ROOT / "out" / "char_classifier.pt"
+LETTER_MODEL_PATH = ROOT / "out" / "letter_gen.pt"
 
 STYLES = {
     "pencil": dict(color=(108, 112, 122), opacity=0.78, rot=3.6, jx=1.5, jy=1.6, sj=0.08, gap=0.02, dil=0, blur=0.35, join=1, grain=True, bleed=0.0),
@@ -28,6 +29,8 @@ STYLES = {
 
 _CACHE_KEY = None
 _CACHE_POOLS = None
+_LETTER_INFER_MOD = None
+_LETTER_INFER_IMPORT_FAILED = False
 
 
 def clamp(v, lo, hi):
@@ -54,7 +57,70 @@ def parse_args():
     p.add_argument("--json", action="store_true")
     p.add_argument("--debug-json", type=Path, default=None)
     p.add_argument("--use-classifier", action="store_true")
+    p.add_argument("--use-letter-model", action="store_true")
+    p.add_argument("--letter-model-weights", type=Path, default=LETTER_MODEL_PATH)
+    p.add_argument("--letter-style-strength", type=float, default=1.0)
+    p.add_argument("--baseline-jitter", type=float, default=1.0)
+    p.add_argument("--word-slant", type=float, default=1.0)
+    p.add_argument("--letter-rot-jitter", type=float, default=1.0)
+    p.add_argument("--ink-variation", type=float, default=0.12)
+    p.add_argument("--letter-model-min-samples", type=int, default=4)
     return p.parse_args()
+
+
+def get_letter_infer_module():
+    global _LETTER_INFER_MOD, _LETTER_INFER_IMPORT_FAILED
+    if _LETTER_INFER_MOD is not None:
+        return _LETTER_INFER_MOD
+    if _LETTER_INFER_IMPORT_FAILED:
+        return None
+    try:
+        from python_ai import infer as letter_infer
+
+        _LETTER_INFER_MOD = letter_infer
+        return _LETTER_INFER_MOD
+    except Exception:
+        _LETTER_INFER_IMPORT_FAILED = True
+        return None
+
+
+def mask_bbox(mask):
+    ys, xs = np.where(mask > 20)
+    if xs.size == 0:
+        h, w = mask.shape[:2]
+        return 0, 0, w, h
+    return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def pair_kerning_adjust(prev_ch, ch, font_px):
+    if not prev_ch or not ch:
+        return 0.0
+    pair = f"{prev_ch}{ch}"
+    tight = {"ri", "rn", "rm", "rv", "rw", "ty", "yo", "wa", "wo", "ov", "ve", "ll", "tt", "ff"}
+    loose = {"mm", "mw", "wm", "ww", "nn", "mn"}
+    if pair in tight:
+        return -0.06 * float(font_px)
+    if pair in loose:
+        return 0.03 * float(font_px)
+    if prev_ch in "ilt" and ch in ".,;:'`\"":
+        return -0.04 * float(font_px)
+    return 0.0
+
+
+def maybe_apply_ink_variation(mask, np_rng, amount):
+    amt = clamp(float(amount), 0.0, 1.0)
+    if amt <= 0.0:
+        return mask
+    out = mask.copy()
+    if np_rng.random() < (0.22 + 0.38 * amt):
+        if np_rng.random() < 0.5:
+            out = cv2.dilate(out, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+        else:
+            out = cv2.erode(out, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
+    if np_rng.random() < (0.20 + 0.25 * amt):
+        sigma = 0.15 + 0.70 * amt
+        out = cv2.GaussianBlur(out, (3, 3), sigma)
+    return out
 
 
 def load_samples(use_classifier=True):
@@ -437,10 +503,53 @@ def fallback_patch(ch, font_px, style, np_rng):
     return p, float(base_ratio), float(adv_ratio)
 
 
-def render(text, style, width, height, line_spacing, seed, use_classifier):
+def render(
+    text,
+    style,
+    width,
+    height,
+    line_spacing,
+    seed,
+    use_classifier,
+    use_letter_model=False,
+    letter_model_weights=None,
+    letter_style_strength=1.0,
+    baseline_jitter=1.0,
+    word_slant=1.0,
+    letter_rot_jitter=1.0,
+    ink_variation=0.12,
+    letter_model_min_samples=4,
+):
     import random
 
-    pools = load_samples(use_classifier=use_classifier)
+    warnings = []
+    warn_once = set()
+
+    try:
+        pools = load_samples(use_classifier=use_classifier)
+    except Exception as exc:
+        pools = {}
+        warnings.append(f"Crop glyph pools unavailable: {exc}")
+
+    letter_infer = None
+    letter_runtime = None
+    letter_model_enabled = bool(use_letter_model)
+    if letter_model_enabled:
+        letter_infer = get_letter_infer_module()
+        weights_path = Path(letter_model_weights or LETTER_MODEL_PATH)
+        if letter_infer is None:
+            warnings.append("Letter model module unavailable; falling back to crop sampler")
+            letter_model_enabled = False
+        elif not weights_path.exists():
+            warnings.append(f"Letter model weights missing at {weights_path}; falling back to crop sampler")
+            letter_model_enabled = False
+        else:
+            try:
+                letter_runtime = letter_infer.load_generator(weights_path=weights_path)
+            except Exception as exc:
+                warnings.append(f"Letter model load failed ({exc}); falling back to crop sampler")
+                letter_model_enabled = False
+
     py_rng = random.Random(int(seed))
     np_rng = np.random.default_rng(int(seed))
     pad_x = max(36, round(width * 0.05))
@@ -456,24 +565,138 @@ def render(text, style, width, height, line_spacing, seed, use_classifier):
         rows[-1] = ((last[:-1] if len(last) > 1 else last) + "...") if last else "..."
 
     canvas = bg_page(width, height, step, pad_t, np_rng)
-    stats = dict(rows=len(rows), handChars=0, fallbackChars=0, joins=0)
+    stats = dict(
+        rows=len(rows),
+        handChars=0,
+        modelChars=0,
+        cropChars=0,
+        fallbackChars=0,
+        joins=0,
+        letterModelFailures=0,
+    )
     meta_rows = []
     missing = "".join([ch for ch in "abcdefghijklmnopqrstuvwxyz" if ch not in pools])
     s = STYLES[style]
-    global_median_bh = float(np.median([p["median_bh"] for p in pools.values()])) if pools else 46.0
+    if pools:
+        global_median_bh = float(np.median([p["median_bh"] for p in pools.values()]))
+    elif letter_runtime is not None:
+        global_median_bh = float(max(8.0, letter_runtime.global_median_bh))
+    else:
+        global_median_bh = 46.0
     recent_by_char = {}
 
     for ri, row in enumerate(rows):
         baseline = pad_t + font_px + (ri * step) + float(py_rng.uniform(-0.4, 0.8))
         x = float(pad_x + py_rng.uniform(-2.2, 2.2))
         prev = None
+        prev_text_char = None
         row_chars = []
-        for ch in row:
+        in_word = False
+        word_slant_deg = 0.0
+        baseline_walk = 0.0
+        rot_bias = 0.0
+
+        for ci, ch in enumerate(row):
             if ch == " ":
                 x += width_est(ch, font_px, pools) + float(py_rng.uniform(0.05, 0.65))
                 prev = None
+                prev_text_char = None
+                in_word = False
                 continue
-            if ("a" <= ch <= "z") and (ch in pools):
+
+            if not in_word:
+                in_word = True
+                word_slant_deg = float(py_rng.uniform(-s["rot"] * 0.35, s["rot"] * 0.35)) * clamp(word_slant, 0.0, 3.0)
+                baseline_walk = float(py_rng.uniform(-0.25, 0.25))
+                rot_bias = float(py_rng.uniform(-0.20, 0.20))
+            else:
+                baseline_walk = (baseline_walk * 0.72) + float(py_rng.uniform(-0.55, 0.55))
+
+            x += pair_kerning_adjust(prev_text_char, ch, font_px)
+            baseline_corr = baseline_walk * clamp(baseline_jitter, 0.0, 3.0)
+            placed = False
+
+            if letter_model_enabled and ("a" <= ch <= "z") and letter_runtime is not None and letter_infer is not None:
+                try:
+                    glyph_seed = int(seed) + (ri * 10_003) + (ci * 137) + (ord(ch) * 7)
+                    gen = letter_infer.generate_glyph(
+                        letter=ch,
+                        seed=glyph_seed,
+                        style_strength=float(letter_style_strength),
+                        output_size=letter_runtime.image_size,
+                        runtime=letter_runtime,
+                        min_class_samples=int(letter_model_min_samples),
+                    )
+                    raw_patch = gen.alpha
+                    x1g, y1g, x2g, y2g = mask_bbox(raw_patch)
+                    bh = max(1, int(y2g - y1g))
+                    letter_median_bh = letter_runtime.median_bh(ch)
+                    if letter_median_bh is None and ch in pools:
+                        letter_median_bh = float(pools[ch]["median_bh"])
+                    if letter_median_bh is None:
+                        letter_median_bh = float(global_median_bh)
+
+                    target_bh_px = max(8.0, (font_px * 1.02) * (float(letter_median_bh) / max(1.0, global_median_bh)))
+                    sy = target_bh_px * float(py_rng.uniform(0.94, 1.08)) / max(1.0, float(bh))
+                    sx = sy * float(py_rng.uniform(1.0 - s["sj"], 1.0 + s["sj"]))
+                    ang = word_slant_deg + (float(py_rng.uniform(-s["rot"] * 0.55, s["rot"] * 0.55)) * clamp(letter_rot_jitter, 0.0, 3.0)) + rot_bias
+                    patch = tf_mask(raw_patch, ang, sx, sy)
+                    patch = maybe_apply_ink_variation(patch, np_rng, ink_variation)
+                    patch = style_mask(patch, style, np_rng)
+
+                    base_off = float(gen.base_ratio * max(1, patch.shape[0] - 1))
+                    jx_lo = -0.35 * s["jx"]
+                    px = int(round(x + py_rng.uniform(jx_lo, s["jx"])))
+                    py = int(round(baseline - base_off + baseline_corr + py_rng.uniform(-s["jy"], s["jy"])))
+                    composite(canvas, patch, px, py, style)
+
+                    la, ra = anchors(patch, px, py)
+                    if prev and prev["isHand"] and prev["ra"] and la:
+                        gap = la[0] - prev["ra"][0]
+                        if 0 < gap <= max(10.0, font_px * 0.23) and abs(la[1] - prev["ra"][1]) <= max(7.0, font_px * 0.13):
+                            if draw_join(canvas, prev["ra"], la, style, np_rng):
+                                stats["joins"] += 1
+
+                    ys, xs = np.where(patch > 20)
+                    if xs.size:
+                        x1, x2 = int(xs.min()), int(xs.max()) + 1
+                        y1, y2 = int(ys.min()), int(ys.max()) + 1
+                    else:
+                        x1, y1, x2, y2 = 0, 0, patch.shape[1], patch.shape[0]
+                    row_chars.append(
+                        dict(
+                            char=ch,
+                            x=px + x1,
+                            y=py + y1,
+                            w=max(1, x2 - x1),
+                            h=max(1, y2 - y1),
+                            isHand=True,
+                            source="model",
+                        )
+                    )
+                    prev = dict(isHand=True, ra=ra)
+                    visible_w = max(1.0, float(x2 - x1))
+                    if ch in "iljtfr":
+                        gap_px = font_px * 0.08
+                    elif ch in "mw":
+                        gap_px = font_px * 0.12
+                    else:
+                        gap_px = font_px * 0.10
+                    adv_ref = letter_runtime.median_adv(ch)
+                    adv_base = float(adv_ref) if adv_ref is not None else float(gen.adv_ratio)
+                    adv_est = max(font_px * 0.18, adv_base * (font_px * float(py_rng.uniform(0.98, 1.05))))
+                    x = max(x + adv_est + float(py_rng.uniform(-0.12, 0.32)), float(px + x2) + gap_px)
+                    stats["handChars"] += 1
+                    stats["modelChars"] += 1
+                    placed = True
+                except Exception as exc:
+                    stats["letterModelFailures"] += 1
+                    k = f"{ch}:{str(exc)}"
+                    if k not in warn_once:
+                        warn_once.add(k)
+                        warnings.append(f"Letter model fallback for '{ch}': {exc}")
+
+            if not placed and ("a" <= ch <= "z") and (ch in pools):
                 pool = pools[ch]
                 rec = recent_by_char.get(ch)
                 it = sample_pool_item(pool, np_rng, rec)
@@ -481,13 +704,14 @@ def render(text, style, width, height, line_spacing, seed, use_classifier):
                 target_bh_px = max(8.0, (font_px * 1.02) * (pool["median_bh"] / max(1.0, global_median_bh)))
                 sy = target_bh_px * float(py_rng.uniform(0.94, 1.08)) / max(1.0, float(it["bh"]))
                 sx = sy * float(py_rng.uniform(1.0 - s["sj"], 1.0 + s["sj"]))
-                ang = float(py_rng.uniform(-s["rot"], s["rot"]))
+                ang = word_slant_deg + (float(py_rng.uniform(-s["rot"], s["rot"])) * clamp(letter_rot_jitter, 0.0, 3.0)) + rot_bias
                 patch = tf_mask(it["crop"], ang, sx, sy)
+                patch = maybe_apply_ink_variation(patch, np_rng, ink_variation)
                 patch = style_mask(patch, style, np_rng)
                 base_off = float(it["base_ratio"] * max(1, patch.shape[0] - 1))
                 jx_lo = -0.35 * s["jx"]
                 px = int(round(x + py_rng.uniform(jx_lo, s["jx"])))
-                py = int(round(baseline - base_off + py_rng.uniform(-s["jy"], s["jy"])))
+                py = int(round(baseline - base_off + baseline_corr + py_rng.uniform(-s["jy"], s["jy"])))
                 composite(canvas, patch, px, py, style)
                 la, ra = anchors(patch, px, py)
                 if prev and prev["isHand"] and prev["ra"] and la:
@@ -501,7 +725,9 @@ def render(text, style, width, height, line_spacing, seed, use_classifier):
                     y1, y2 = int(ys.min()), int(ys.max()) + 1
                 else:
                     x1, y1, x2, y2 = 0, 0, patch.shape[1], patch.shape[0]
-                row_chars.append(dict(char=ch, x=px + x1, y=py + y1, w=max(1, x2 - x1), h=max(1, y2 - y1), isHand=True))
+                row_chars.append(
+                    dict(char=ch, x=px + x1, y=py + y1, w=max(1, x2 - x1), h=max(1, y2 - y1), isHand=True, source="crop")
+                )
                 prev = dict(isHand=True, ra=ra)
                 recent_by_char[ch] = [it["filename"], *(rec or [])][:3]
                 visible_w = max(1.0, float(x2 - x1))
@@ -512,14 +738,17 @@ def render(text, style, width, height, line_spacing, seed, use_classifier):
                 else:
                     gap_px = font_px * 0.10
                 adv_pool = max(font_px * 0.18, pool["median_adv"] * (font_px * float(py_rng.uniform(0.98, 1.04))))
-                adv_bbox = visible_w + gap_px + (font_px * s["gap"]) + float(py_rng.uniform(0.0, 0.55))
                 x = max(x + adv_pool + float(py_rng.uniform(-0.15, 0.35)), float(px + x2) + gap_px)
                 stats["handChars"] += 1
-            else:
+                stats["cropChars"] += 1
+                placed = True
+
+            if not placed:
                 patch, fb_base_ratio, fb_adv_ratio = fallback_patch(ch, font_px, style, np_rng)
+                patch = maybe_apply_ink_variation(patch, np_rng, ink_variation * 0.8)
                 px = int(round(x + py_rng.uniform(-0.25, 0.55)))
                 fb_base_off = float(fb_base_ratio * max(1, patch.shape[0] - 1))
-                py = int(round(baseline - fb_base_off + py_rng.uniform(-0.5, 0.6)))
+                py = int(round(baseline - fb_base_off + baseline_corr + py_rng.uniform(-0.5, 0.6)))
                 fb_opacity = 0.78 if style == "marker" else (0.84 if style == "ink" else 0.80)
                 composite(canvas, patch, px, py, style, fb_opacity)
                 ys, xs = np.where(patch > 20)
@@ -528,19 +757,42 @@ def render(text, style, width, height, line_spacing, seed, use_classifier):
                     y1, y2 = int(ys.min()), int(ys.max()) + 1
                 else:
                     x1, y1, x2, y2 = 0, 0, patch.shape[1], patch.shape[0]
-                row_chars.append(dict(char=ch, x=px + x1, y=py + y1, w=max(1, x2 - x1), h=max(1, y2 - y1), isHand=False))
+                row_chars.append(
+                    dict(char=ch, x=px + x1, y=py + y1, w=max(1, x2 - x1), h=max(1, y2 - y1), isHand=False, source="fallback")
+                )
                 prev = None
                 visible_w = max(1.0, float(x2 - x1))
                 adv_est = max(width_est(ch, font_px, pools) * 0.78, visible_w + (font_px * fb_adv_ratio))
                 x = max(x + adv_est + float(py_rng.uniform(0.0, 0.35)), float(px + x2) + font_px * 0.05)
                 stats["fallbackChars"] += 1
+
+            prev_text_char = ch
             if x > width - pad_x:
                 break
+
         meta_rows.append(dict(index=ri, text=row, chars=row_chars))
+
     # light vertical vignette
     v = np.linspace(0.98, 1.0, height, dtype=np.float32).reshape(height, 1, 1)
     canvas = np.clip(canvas.astype(np.float32) * v, 0, 255).astype(np.uint8)
-    return canvas, dict(seed=int(seed), rows=meta_rows, truncated=bool(trunc), stats=stats, warnings=[f"Missing glyph pools for: {missing}"] if missing else [])
+
+    if missing and pools:
+        warnings.append(f"Missing glyph pools for: {missing}")
+    if letter_model_enabled and letter_runtime is not None:
+        model_missing = "".join(
+            [ch for ch in "abcdefghijklmnopqrstuvwxyz" if letter_runtime.count_for(ch) < max(1, int(letter_model_min_samples))]
+        )
+        if model_missing:
+            warnings.append(f"Letter model has low/insufficient samples for: {model_missing}")
+
+    deduped_warnings = []
+    seen_warn = set()
+    for w in warnings:
+        if w not in seen_warn:
+            seen_warn.add(w)
+            deduped_warnings.append(w)
+
+    return canvas, dict(seed=int(seed), rows=meta_rows, truncated=bool(trunc), stats=stats, warnings=deduped_warnings)
 
 
 def main():
@@ -551,8 +803,25 @@ def main():
         raise SystemExit("Text too long")
     a.out.parent.mkdir(parents=True, exist_ok=True)
     seed = int(a.seed) if a.seed is not None else secrets.randbelow(2_147_483_647)
+    auto_use_letter_model = bool(a.use_letter_model or (a.letter_model_weights and Path(a.letter_model_weights).exists()))
     try:
-        img, meta = render(a.text, a.style, int(a.width), int(a.height), float(a.line_spacing), seed, bool(a.use_classifier))
+        img, meta = render(
+            a.text,
+            a.style,
+            int(a.width),
+            int(a.height),
+            float(a.line_spacing),
+            seed,
+            bool(a.use_classifier),
+            use_letter_model=auto_use_letter_model,
+            letter_model_weights=a.letter_model_weights,
+            letter_style_strength=float(a.letter_style_strength),
+            baseline_jitter=float(a.baseline_jitter),
+            word_slant=float(a.word_slant),
+            letter_rot_jitter=float(a.letter_rot_jitter),
+            ink_variation=float(a.ink_variation),
+            letter_model_min_samples=int(a.letter_model_min_samples),
+        )
     except Exception as e:
         if a.json:
             print(json.dumps({"ok": False, "error": str(e)}))
