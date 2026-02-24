@@ -5,9 +5,14 @@ import {
   type GenerateResponse
 } from "@/lib/types";
 import { renderHandwritingPlaceholderPng } from "@/lib/handwriting-stub";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
 import { z } from "zod";
 
-export type GeneratorBackend = "stub" | "fastapi";
+export type GeneratorBackend = "stub" | "fastapi" | "local";
 
 export class UpstreamGenerateError extends Error {
   code: "UPSTREAM_HTTP" | "UPSTREAM_TIMEOUT" | "UPSTREAM_INVALID";
@@ -59,6 +64,9 @@ function parseBackend(value: string | undefined): GeneratorBackend | undefined {
   if (normalized === "fastapi") {
     return "fastapi";
   }
+  if (normalized === "local" || normalized === "python" || normalized === "local-python") {
+    return "local";
+  }
   return undefined;
 }
 
@@ -68,7 +76,7 @@ export function getConfiguredGeneratorBackend(): GeneratorBackend {
     return explicit;
   }
 
-  return envString("FASTAPI_GENERATE_URL") ? "fastapi" : "stub";
+  return envString("FASTAPI_GENERATE_URL") ? "fastapi" : "local";
 }
 
 export function getFastApiGenerateUrl(): string {
@@ -87,6 +95,36 @@ export function getFastApiTimeoutMs(): number {
   }
 
   return Math.floor(value);
+}
+
+export function getLocalPythonExecutable(): string {
+  return envString("PYTHON_EXECUTABLE") ?? "python";
+}
+
+export function getLocalPythonGeneratorScript(): string {
+  return envString("HANDWRITE_LOCAL_SCRIPT") ?? "generate_handwriting_page.py";
+}
+
+export function getLocalPythonTimeoutMs(): number {
+  const raw = envString("HANDWRITE_LOCAL_TIMEOUT_MS");
+  if (!raw) {
+    return 45000;
+  }
+
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    return 45000;
+  }
+  return Math.floor(value);
+}
+
+export function getLocalPythonFallbackToStub(): boolean {
+  const raw = envString("HANDWRITE_LOCAL_FALLBACK_TO_STUB");
+  if (!raw) {
+    return false;
+  }
+  const normalized = raw.toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 export function normalizeUpstreamGenerateResponse(
@@ -125,6 +163,64 @@ async function safeParseJson(response: Response): Promise<unknown | null> {
   } catch {
     return null;
   }
+}
+
+async function runLocalProcess(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number; cwd?: string }
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options?.cwd ?? process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeoutMs = options?.timeoutMs ?? 45000;
+
+    const timer = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.kill("SIGTERM");
+      reject(
+        new UpstreamGenerateError("Local Python handwriting generator timed out", {
+          code: "UPSTREAM_TIMEOUT",
+          details: { timeoutMs }
+        })
+      );
+    }, timeoutMs);
+
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+  });
 }
 
 export async function generateHandwritingViaFastApi(
@@ -196,6 +292,79 @@ export async function generateHandwritingViaFastApi(
   }
 }
 
+export async function generateHandwritingViaLocalPython(
+  request: GenerateRequest
+): Promise<GenerateResponse> {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "handwrite-generate-"));
+  const outPath = path.join(tempDir, `${randomUUID()}.png`);
+  const debugJsonPath = path.join(tempDir, `${randomUUID()}.json`);
+  const args = [
+    getLocalPythonGeneratorScript(),
+    "--text",
+    request.text,
+    "--style",
+    request.style,
+    "--width",
+    String(request.width),
+    "--height",
+    String(request.height),
+    "--line-spacing",
+    String(request.lineSpacing),
+    "--out",
+    outPath,
+    "--json",
+    "--debug-json",
+    debugJsonPath
+  ];
+  if (request.seed !== null) {
+    args.push("--seed", String(request.seed));
+  }
+  // Use classifier scoring by default when the model exists. Allow opt-out for faster local iteration.
+  if (envString("HANDWRITE_LOCAL_USE_CLASSIFIER") !== "0") {
+    args.push("--use-classifier");
+  }
+
+  try {
+    const result = await runLocalProcess(getLocalPythonExecutable(), args, {
+      timeoutMs: getLocalPythonTimeoutMs(),
+      cwd: process.cwd()
+    });
+
+    if (result.code !== 0) {
+      throw new UpstreamGenerateError("Local Python handwriting generator failed", {
+        code: "UPSTREAM_HTTP",
+        details: {
+          code: result.code,
+          stdout: result.stdout.trim() || null,
+          stderr: result.stderr.trim() || null
+        }
+      });
+    }
+
+    const png = await readFile(outPath);
+    const imageDataUrl = `data:image/png;base64,${png.toString("base64")}`;
+
+    const response: GenerateResponse = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      request: { ...request },
+      imageDataUrl
+    };
+
+    return generateResponseSchema.parse(response);
+  } catch (error) {
+    if (error instanceof UpstreamGenerateError) {
+      throw error;
+    }
+    throw new UpstreamGenerateError("Failed to reach local Python handwriting generator", {
+      code: "UPSTREAM_HTTP",
+      details: error instanceof Error ? error.message : error
+    });
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 export async function generateHandwritingStub(
   request: GenerateRequest
 ): Promise<GenerateResponse> {
@@ -215,6 +384,16 @@ export async function generateHandwriting(
   request: GenerateRequest
 ): Promise<GenerateResponse> {
   const backend = getConfiguredGeneratorBackend();
+  if (backend === "local") {
+    try {
+      return await generateHandwritingViaLocalPython(request);
+    } catch (error) {
+      if (getLocalPythonFallbackToStub()) {
+        return generateHandwritingStub(request);
+      }
+      throw error;
+    }
+  }
   if (backend === "fastapi") {
     return generateHandwritingViaFastApi(request);
   }

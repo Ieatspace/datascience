@@ -33,6 +33,51 @@ export const generateResponseSchema = z.object({
   imageDataUrl: z.string().startsWith("data:image/png;base64,")
 });
 
+export const recognizePageRequestSchema = z.object({
+  dotted: z.boolean().default(false),
+  strict: z.boolean().default(false),
+  softDotMerge: z.boolean().default(false),
+  noSpaces: z.boolean().default(false),
+  includeDebugImage: z.boolean().default(true),
+  topk: z.number().int().min(1).max(5).default(1)
+});
+
+export const recognizeTopKPredictionSchema = z.object({
+  label: z.string().min(1),
+  conf: z.number().min(0).max(1)
+});
+
+export const recognizeCharPredictionSchema = z.object({
+  x: z.number().int(),
+  y: z.number().int(),
+  w: z.number().int().positive(),
+  h: z.number().int().positive(),
+  pred: z.string().min(1),
+  conf: z.number().min(0).max(1),
+  topk: z.array(recognizeTopKPredictionSchema).optional()
+});
+
+export const recognizeLineSchema = z.object({
+  index: z.number().int().min(0),
+  text: z.string(),
+  chars: z.array(recognizeCharPredictionSchema)
+});
+
+export const recognizeResponseSchema = z.object({
+  text: z.string(),
+  lines: z.array(recognizeLineSchema),
+  detectedCharacters: z.number().int().min(0),
+  averageConfidence: z.number().min(0).max(1).nullable().optional(),
+  extractor: z.object({
+    gentle: z.boolean(),
+    dotted: z.boolean(),
+    softDotMerge: z.boolean()
+  }),
+  debugImageDataUrl: z.string().startsWith("data:image/png;base64,").nullable().optional(),
+  imageName: z.string().min(1),
+  topk: z.number().int().min(1).max(5)
+});
+
 export const apiErrorResponseSchema = z.object({
   error: z.object({
     message: z.string(),
@@ -44,6 +89,8 @@ export type HandwritingStyle = z.infer<typeof handwritingStyleSchema>;
 export type GenerateRequest = z.infer<typeof generateRequestSchema>;
 export type GenerateResponse = z.infer<typeof generateResponseSchema>;
 export type ApiErrorResponse = z.infer<typeof apiErrorResponseSchema>;
+export type RecognizePageRequest = z.infer<typeof recognizePageRequestSchema>;
+export type RecognizeResponse = z.infer<typeof recognizeResponseSchema>;
 
 export const STYLE_OPTIONS: Array<{ label: string; value: HandwritingStyle }> = [
   { label: "Pencil", value: "pencil" },

@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { EditorPanel } from "@/components/EditorPanel";
 import { HistoryStrip } from "@/components/HistoryStrip";
 import { PreviewPanel } from "@/components/PreviewPanel";
+import { RecognizePanel } from "@/components/RecognizePanel";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { TopNav } from "@/components/TopNav";
 import { toast } from "@/components/ui/use-toast";
@@ -272,6 +273,8 @@ export function StudioClient() {
           />
         </div>
       </div>
+
+      <RecognizePanel />
     </div>
   );
 }
