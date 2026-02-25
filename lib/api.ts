@@ -1,11 +1,15 @@
 import {
   apiErrorResponseSchema,
+  datasetStatsSchema,
   generateResponseSchema,
   recognizeResponseSchema,
+  trainingStatusSchema,
+  type DatasetStats,
   type GenerateRequest,
   type GenerateResponse,
   type RecognizePageRequest,
-  type RecognizeResponse
+  type RecognizeResponse,
+  type TrainingStatus
 } from "@/lib/types";
 
 export class ApiClientError extends Error {
@@ -21,7 +25,8 @@ export class ApiClientError extends Error {
 }
 
 export async function postGenerate(
-  request: GenerateRequest
+  request: GenerateRequest,
+  options?: { signal?: AbortSignal }
 ): Promise<GenerateResponse> {
   const response = await fetch("/api/generate", {
     method: "POST",
@@ -29,6 +34,7 @@ export async function postGenerate(
       "Content-Type": "application/json"
     },
     cache: "no-store",
+    signal: options?.signal,
     body: JSON.stringify(request)
   });
 
@@ -99,4 +105,47 @@ export async function postRecognizePage(
   }
 
   return parsed.data;
+}
+
+export async function getTrainingStatus(): Promise<TrainingStatus> {
+  const response = await fetch("/api/status", { cache: "no-store" });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiClientError("Failed to load training status", response.status, payload);
+  }
+  const parsed = trainingStatusSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiClientError("Invalid training status response", response.status, parsed.error.flatten());
+  }
+  return parsed.data;
+}
+
+export async function getDatasetStats(): Promise<DatasetStats> {
+  const response = await fetch("/api/dataset-stats", { cache: "no-store" });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new ApiClientError("Failed to load dataset stats", response.status, payload);
+  }
+  const parsed = datasetStatsSchema.safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiClientError("Invalid dataset stats response", response.status, parsed.error.flatten());
+  }
+  return parsed.data;
+}
+
+export async function postTrainControl(action: "train" | "stop"): Promise<{ ok: boolean; message?: string }> {
+  const response = await fetch(action === "train" ? "/api/train" : "/api/stop", {
+    method: "POST",
+    cache: "no-store"
+  });
+  const payload = await response.json().catch(() => null);
+  return {
+    ok: response.ok,
+    message:
+      payload && typeof payload === "object" && "message" in payload
+        ? String((payload as { message?: unknown }).message)
+        : response.ok
+          ? "ok"
+          : "backend required"
+  };
 }

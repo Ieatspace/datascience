@@ -9,7 +9,6 @@ import {
   CardHeader,
   CardTitle
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -32,7 +31,6 @@ type SettingsPanelProps = {
   onStyleChange: (value: HandwritingStyle) => void;
   onSizeChange: (width: number, height: number) => void;
   onLineSpacingChange: (value: number) => void;
-  onSeedChange: (value: number | null) => void;
 };
 
 function getSizeValue(width: number, height: number) {
@@ -44,8 +42,7 @@ export function SettingsPanel({
   disabled = false,
   onStyleChange,
   onSizeChange,
-  onLineSpacingChange,
-  onSeedChange
+  onLineSpacingChange
 }: SettingsPanelProps) {
   const currentSizeValue = getSizeValue(request.width, request.height);
 
@@ -62,7 +59,7 @@ export function SettingsPanel({
           <span className="section-chip hidden sm:inline-flex">Metadata</span>
         </div>
         <CardDescription>
-          Tune style, size, spacing, and seed behavior for each generated preview.
+          Tune style, size, and spacing for each generated preview.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -87,11 +84,9 @@ export function SettingsPanel({
           </div>
           <div className="rounded-md bg-white/70 p-2">
             <p className="text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
-              Seed
+              Variation
             </p>
-            <p className="mt-1 text-sm font-medium tabular-nums">
-              {request.seed ?? "auto"}
-            </p>
+            <p className="mt-1 text-sm font-medium">Always random</p>
           </div>
         </div>
 
@@ -163,36 +158,6 @@ export function SettingsPanel({
             }}
             disabled={disabled}
           />
-        </div>
-
-        <div className="space-y-2 rounded-lg border border-border/70 bg-background/40 p-3">
-          <Label htmlFor="seed-input">Seed (optional)</Label>
-          <Input
-            id="seed-input"
-            type="number"
-            inputMode="numeric"
-            min={0}
-            max={2147483647}
-            step={1}
-            value={request.seed ?? ""}
-            disabled={disabled}
-            onChange={(event) => {
-              const raw = event.target.value;
-              if (raw === "") {
-                onSeedChange(null);
-                return;
-              }
-
-              const next = Number(raw);
-              if (Number.isInteger(next) && next >= 0) {
-                onSeedChange(next);
-              }
-            }}
-            placeholder="Auto (derived from input)"
-          />
-          <p className="text-xs text-muted-foreground">
-            Leave blank to derive a deterministic seed from the text and settings.
-          </p>
         </div>
       </CardContent>
     </Card>

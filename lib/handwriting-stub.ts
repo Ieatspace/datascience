@@ -1,7 +1,7 @@
 import sharp from "sharp";
 
 import { type GenerateRequest, type HandwritingStyle } from "@/lib/types";
-import { hashStringToSeed, mulberry32, randomBetween } from "@/lib/rng";
+import { mulberry32, randomBetween } from "@/lib/rng";
 
 type StyleProfile = {
   fill: string;
@@ -156,16 +156,23 @@ function wrapTextToRows(
 function buildPaperNoise(
   width: number,
   height: number,
-  rng: () => number
+  rng: () => number,
+  intensity: "off" | "subtle" | "med" = "subtle"
 ): string {
-  const speckleCount = Math.max(40, Math.round((width * height) / 38000));
+  if (intensity === "off") {
+    return "";
+  }
+  const speckleCount = Math.max(
+    intensity === "med" ? 65 : 40,
+    Math.round((width * height) / (intensity === "med" ? 24000 : 38000))
+  );
   const nodes: string[] = [];
 
   for (let index = 0; index < speckleCount; index += 1) {
     const x = randomBetween(rng, 0, width);
     const y = randomBetween(rng, 0, height);
-    const r = randomBetween(rng, 0.25, 0.9);
-    const opacity = randomBetween(rng, 0.015, 0.05);
+    const r = randomBetween(rng, 0.25, intensity === "med" ? 1.1 : 0.9);
+    const opacity = randomBetween(rng, intensity === "med" ? 0.02 : 0.015, intensity === "med" ? 0.07 : 0.05);
     nodes.push(
       `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${r.toFixed(2)}" fill="#111827" opacity="${opacity.toFixed(3)}" />`
     );
@@ -190,11 +197,41 @@ function buildRuledLines(
     y += baselineStep;
   }
 
-  lines.push(
-    `<line x1="56" y1="20" x2="56" y2="${(height - 20).toFixed(2)}" stroke="#f3a3a3" stroke-width="1" opacity="0.45" />`
-  );
-
   return lines.join("");
+}
+
+function buildGridLines(width: number, height: number, baselineStep: number, topPadding: number): string {
+  const horizontal: string[] = [];
+  let y = topPadding + baselineStep * 0.6;
+  while (y < height - 24) {
+    horizontal.push(
+      `<line x1="28" y1="${y.toFixed(2)}" x2="${(width - 28).toFixed(2)}" y2="${y.toFixed(2)}" stroke="#d8e0ee" stroke-width="1" opacity="0.52" />`
+    );
+    y += baselineStep;
+  }
+
+  const vertical: string[] = [];
+  const gridStep = Math.max(20, Math.round(baselineStep));
+  for (let x = 28; x < width - 28; x += gridStep) {
+    vertical.push(
+      `<line x1="${x}" y1="20" x2="${x}" y2="${height - 20}" stroke="#e0e7f2" stroke-width="1" opacity="0.5" />`
+    );
+  }
+
+  return `${horizontal.join("")}${vertical.join("")}`;
+}
+
+function buildDotGrid(width: number, height: number, baselineStep: number, topPadding: number): string {
+  const nodes: string[] = [];
+  const step = Math.max(20, Math.round(baselineStep));
+  for (let y = topPadding + baselineStep * 0.6; y < height - 24; y += step) {
+    for (let x = 28; x < width - 28; x += step) {
+      nodes.push(
+        `<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="1.1" fill="#c9d3e4" opacity="0.75" />`
+      );
+    }
+  }
+  return nodes.join("");
 }
 
 function buildTextGlyphs(
@@ -283,6 +320,8 @@ function truncateRowsWithEllipsis(rows: string[]): string[] {
 
 function buildPlaceholderSvg(request: GenerateRequest): string {
   const { width, height, lineSpacing, text, style } = request;
+  const pageStyle = request.pageStyle ?? "lined";
+  const paperTexture = request.paperTexture ?? "subtle";
   const paddingX = Math.max(36, Math.round(width * 0.05));
   const paddingTop = Math.max(28, Math.round(height * 0.045));
   const paddingBottom = Math.max(24, Math.round(height * 0.04));
@@ -294,24 +333,25 @@ function buildPlaceholderSvg(request: GenerateRequest): string {
   );
   const innerWidth = width - paddingX * 2 - 8;
 
-  const seed =
-    request.seed ??
-    hashStringToSeed(
-      JSON.stringify({
-        text: request.text,
-        style: request.style,
-        width: request.width,
-        height: request.height,
-        lineSpacing: request.lineSpacing
-      })
-    );
+  const seed = request.seed ?? Math.floor(Math.random() * 0xffffffff);
   const rng = mulberry32(seed);
 
   const wrapped = wrapTextToRows(text, innerWidth, fontSize, maxRows);
   const rows = wrapped.truncated ? truncateRowsWithEllipsis(wrapped.rows) : wrapped.rows;
 
-  const paperNoise = buildPaperNoise(width, height, rng);
-  const ruledLines = buildRuledLines(width, height, baselineStep, paddingTop);
+  const paperNoise = buildPaperNoise(width, height, rng, paperTexture);
+  const guides =
+    pageStyle === "blank"
+      ? ""
+      : pageStyle === "grid"
+        ? buildGridLines(width, height, baselineStep, paddingTop)
+        : pageStyle === "dot"
+          ? buildDotGrid(width, height, baselineStep, paddingTop)
+          : buildRuledLines(width, height, baselineStep, paddingTop);
+  const leftMargin =
+    pageStyle === "lined" || pageStyle === "grid"
+      ? `<line x1="56" y1="20" x2="56" y2="${(height - 20).toFixed(2)}" stroke="#f3a3a3" stroke-width="1" opacity="0.45" />`
+      : "";
   const glyphs = buildTextGlyphs(rows, {
     width,
     height,
@@ -322,7 +362,7 @@ function buildPlaceholderSvg(request: GenerateRequest): string {
     paddingTop,
     rng
   });
-  const headerNote = `Style: ${style.toUpperCase()}${request.seed !== null ? ` | Seed: ${request.seed}` : " | Seed: auto"}`;
+  const headerNote = `Style: ${style.toUpperCase()} | ${pageStyle}${request.seed != null ? ` | Seed: ${request.seed}` : " | Seed: auto"}`;
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
@@ -338,7 +378,7 @@ function buildPlaceholderSvg(request: GenerateRequest): string {
   <rect x="0" y="0" width="${width}" height="${height}" rx="16" fill="#f3f0e8" />
   <rect x="10" y="10" width="${width - 20}" height="${height - 20}" rx="12" fill="url(#paperShade)" stroke="#e7e2d7" filter="url(#softShadow)" />
   <g>${paperNoise}</g>
-  <g>${ruledLines}</g>
+  <g>${guides}${leftMargin}</g>
   <text x="${paddingX}" y="${Math.max(22, paddingTop - 8)}" fill="#64748b" opacity="0.75" font-size="${Math.max(11, Math.round(fontSize * 0.38))}" font-family="ui-sans-serif, system-ui, sans-serif">${escapeXml(headerNote)}</text>
   <g>${glyphs}</g>
 </svg>`;

@@ -1,8 +1,8 @@
-# Handwrite Studio (Letter Model Phase 1)
+# Handwrite Studio (Generative Letter Model Phase 1)
 
 This project renders handwritten PNG previews in a Next.js app.
 
-Phase 1 adds a lightweight letter-level learned generator (`python_ai/`) that learns per-letter variation from your scanned/labeled glyph crops and plugs into the existing `/api/generate` flow without changing the frontend preview contract.
+Phase 1 adds a real letter-level generative model (`python_ai/lettergen/`) that learns a distribution over your scanned/labeled glyph crops and samples new glyph pixels (not crop copy/paste) during rendering.
 
 ## Current Website Flow
 
@@ -29,51 +29,56 @@ Notes:
 - Spaces are handled by the renderer (not the model).
 - Missing letters fall back to the existing crop sampler or fallback glyph path.
 
-## Phase 1: Train the Letter Model
+## Phase 1: Train the Letter Generator (cVAE)
 
 Recommended (CPU-friendly defaults):
 
 ```bash
-python -m python_ai.train --epochs 20 --batch-size 64
+python -m python_ai.lettergen.train --epochs 20 --batch-size 64
 ```
 
 Useful options:
 
 ```bash
-python -m python_ai.train ^
+python -m python_ai.lettergen.train ^
   --epochs 30 ^
   --batch-size 64 ^
   --image-size 64 ^
   --latent-dim 32 ^
   --beta 0.15 ^
+  --beta-warmup-epochs 6 ^
   --val-split 0.12 ^
   --seed 1234 ^
   --checkpoint-dir out/checkpoints ^
   --out-weights out/letter_gen.pt ^
-  --out-config out/letter_gen.json
+  --out-config out/letter_gen_config.json
 ```
 
 Outputs:
 
 - Weights: `out/letter_gen.pt`
-- Training config/summary JSON: `out/letter_gen.json`
+- Training config/summary JSON: `out/letter_gen_config.json`
 - Epoch checkpoints: `out/checkpoints/letter_gen_epochXXX.pt`
+
+The training script always writes the canonical website activation artifact:
+
+- `out/letter_gen.pt`
 
 ## Sanity Check: Sample Generated Letters
 
 Generate sample grid for one letter:
 
 ```bash
-python -m python_ai.sample --letter a
+python -m python_ai.lettergen.sample --letter a --n 16 --out out/samples_a.png
 ```
 
 Generate one sample for every letter:
 
 ```bash
-python -m python_ai.sample --letter all
+python -m python_ai.lettergen.sample --letter all
 ```
 
-Sample grids are written to `out/generated/` by default.
+Sample grids are written to `out/` by default (or `--out` path if provided).
 
 ## Smoke Test (Python)
 
@@ -83,7 +88,7 @@ This script:
 - then renders `"hello world"` via `generate_handwriting_page.py` using the learned letter model
 
 ```bash
-python -m python_ai.smoke_test
+python -m python_ai.lettergen.smoke_test
 ```
 
 ## Website Integration (Automatic)
@@ -118,6 +123,71 @@ The smoke script posts to `http://localhost:3000/api/generate` and asserts the r
 
 - `data:image/png;base64,`
 
+## SaaS-Style Dashboard UI (Generate / OCR / Dataset / Training)
+
+The web app now ships with a richer dashboard UI:
+
+- Tabbed workspace: `Generate`, `OCR`, `Dataset`, `Training`
+- 16 themes with persistence (`localStorage` key: `handwriting_theme`)
+- Advanced generation controls (variation, style strength, temperature, seed lock, spacing, page style)
+- Animated preview reveal + shimmer loading state (respects reduced motion)
+- Debug overlay toggles (boxes, labels, fallback markers)
+- Presets save/load in browser storage
+- Export actions: PNG + transparent PNG (PDF UI placeholder)
+
+### Theme system
+
+Theme definitions are centralized in:
+
+- `lib/themes.ts`
+
+Each theme defines:
+
+- `id`
+- `name`
+- `cssVars` (`--bg`, `--panel`, `--text`, `--muted`, `--border`, `--accent`, `--accent2`, `--shadow`, etc.)
+
+To add a theme:
+
+1. Add a new object to `THEMES` in `lib/themes.ts`
+2. Provide a unique `id` and readable `name`
+3. Fill `cssVars` with colors/gradient values
+
+### Backend endpoints used by the dashboard
+
+- `POST /api/generate` (existing generator route)
+- `GET /api/status` (training status; reads local files/logs when available)
+- `GET /api/dataset-stats` (dataset counts; falls back to `public/mock/dataset_stats.json`)
+- `POST /api/train` (stub; UI-ready)
+- `POST /api/stop` (stub; UI-ready)
+
+If your backend process control is not wired yet, the UI still works and shows stub responses for train/stop controls.
+
+### Exact Run Steps (End-to-End)
+
+1. Install/start the website
+
+```bash
+npm install
+npm run dev
+```
+
+2. Train the generative letter model
+
+```bash
+python -m python_ai.lettergen.train --epochs 20 --batch-size 64
+```
+
+3. Confirm the activation weights file exists
+
+```bash
+python -c "from pathlib import Path; p=Path('out/letter_gen.pt'); print(p.exists(), p.resolve())"
+```
+
+4. Generate from the website and confirm server log shows:
+
+- `USING LETTER GEN MODEL: out/letter_gen.pt`
+
 ## Local Generator Tuning (Optional)
 
 The request schema supports optional hidden fields (not required by the UI) for letter-model tuning:
@@ -151,7 +221,7 @@ See `.env.example`. Relevant additions:
 
 - Check class counts in `out/labels.csv`
 - Add more samples for the weak letters
-- Retrain (`python -m python_ai.train ...`)
+- Retrain (`python -m python_ai.lettergen.train ...`)
 - The renderer will fall back to crop sampling or fallback glyphs for unsupported/low-sample letters
 
 ### Blurry outputs
@@ -173,15 +243,15 @@ See `.env.example`. Relevant additions:
 - Use `--max-samples` for iteration
 - Reduce `--base-channels` or `--latent-dim` for quicker experiments
 
-## Phase 2: Full Sentence Model (Scaffold Only)
+## Phase 2: Sentence/Line Model (Scaffold Only)
 
 Phase 2 is intentionally scaffolded and not implemented yet.
 
 Added placeholders:
 
-- `python_ai/text2handwriting/dataset_line.py`
-- `python_ai/text2handwriting/model_line.py`
-- `python_ai/text2handwriting/train_line.py`
+- `python_ai/textgen/dataset_lines.py`
+- `python_ai/textgen/model_lines.py`
+- `python_ai/textgen/train_lines.py`
 
 ### What Phase 2 will need
 
@@ -204,4 +274,4 @@ Paired data:
 - columns: `text,image_path`
 - images pre-cropped to a single handwritten line
 
-Phase 2 training script currently raises `NotImplementedError` with guidance so the repo has a clean extension point without pretending a large text-conditioned model is ready.
+Phase 2 training stub currently raises `NotImplementedError` with guidance so the repo has a clean extension point without pretending a large text-conditioned model is ready.

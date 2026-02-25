@@ -5,8 +5,7 @@ const payload = {
   style: "ink",
   width: 960,
   height: 360,
-  lineSpacing: 1.25,
-  seed: 1234
+  lineSpacing: 1.25
 };
 
 const response = await fetch(endpoint, {

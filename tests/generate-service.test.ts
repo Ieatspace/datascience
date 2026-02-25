@@ -52,28 +52,25 @@ describe("generateHandwritingStub", () => {
   it("returns a response that matches the API schema", async () => {
     const response = await generateHandwritingStub({
       ...DEFAULT_GENERATE_REQUEST,
-      text: "Hello from the API stub",
-      seed: 42
+      text: "Hello from the API stub"
     });
 
     expect(generateResponseSchema.safeParse(response).success).toBe(true);
     expect(response.imageDataUrl.startsWith("data:image/png;base64,")).toBe(true);
-    expect(response.request.seed).toBe(42);
   });
 
-  it("produces a deterministic image for the same request + seed", async () => {
+  it("produces a randomized image for repeated requests", async () => {
     const request = {
       ...DEFAULT_GENERATE_REQUEST,
       text: "Deterministic test",
-      style: "pencil" as const,
-      seed: 123456
+      style: "pencil" as const
     };
 
     const first = await generateHandwritingStub(request);
     const second = await generateHandwritingStub(request);
 
     expect(first.id).not.toEqual(second.id);
-    expect(first.imageDataUrl).toEqual(second.imageDataUrl);
+    expect(first.imageDataUrl).not.toEqual(second.imageDataUrl);
   });
 });
 

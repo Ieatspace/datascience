@@ -1,6 +1,7 @@
 import {
   generateRequestSchema,
   generateResponseSchema,
+  type GenerateMeta,
   type GenerateRequest,
   type GenerateResponse
 } from "@/lib/types";
@@ -245,6 +246,74 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
+async function readDebugMeta(debugJsonPath: string): Promise<GenerateMeta | undefined> {
+  try {
+    const raw = await readFile(debugJsonPath, "utf-8");
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return undefined;
+    }
+    const metaRoot = (parsed as { meta?: unknown }).meta;
+    if (!metaRoot || typeof metaRoot !== "object") {
+      return undefined;
+    }
+    const rows = Array.isArray((metaRoot as { rows?: unknown }).rows)
+      ? ((metaRoot as { rows: unknown[] }).rows as Array<Record<string, unknown>>)
+      : [];
+    const letters: GenerateMeta["letters"] = [];
+    for (const row of rows) {
+      const chars = Array.isArray(row.chars) ? (row.chars as Array<Record<string, unknown>>) : [];
+      for (const ch of chars) {
+        if (typeof ch.char !== "string") continue;
+        const x = Number(ch.x);
+        const y = Number(ch.y);
+        const w = Number(ch.w);
+        const h = Number(ch.h);
+        if (![x, y, w, h].every(Number.isFinite)) continue;
+        const sourceRaw = typeof ch.source === "string" ? ch.source : "fallback";
+        letters.push({
+          char: ch.char,
+          bbox: { x: Math.round(x), y: Math.round(y), w: Math.max(1, Math.round(w)), h: Math.max(1, Math.round(h)) },
+          source: sourceRaw === "model" ? "generated" : "fallback"
+        });
+      }
+    }
+    const statsRaw = (metaRoot as { stats?: unknown }).stats;
+    const warnings = Array.isArray((metaRoot as { warnings?: unknown }).warnings)
+      ? ((metaRoot as { warnings: unknown[] }).warnings.filter((v): v is string => typeof v === "string"))
+      : undefined;
+    const seedUsed = Number((metaRoot as { seed?: unknown }).seed);
+    return {
+      letters,
+      stats:
+        statsRaw && typeof statsRaw === "object"
+          ? {
+              handChars: Number.isFinite(Number((statsRaw as Record<string, unknown>).handChars))
+                ? Math.round(Number((statsRaw as Record<string, unknown>).handChars))
+                : undefined,
+              modelChars: Number.isFinite(Number((statsRaw as Record<string, unknown>).modelChars))
+                ? Math.round(Number((statsRaw as Record<string, unknown>).modelChars))
+                : undefined,
+              cropChars: Number.isFinite(Number((statsRaw as Record<string, unknown>).cropChars))
+                ? Math.round(Number((statsRaw as Record<string, unknown>).cropChars))
+                : undefined,
+              fallbackChars: Number.isFinite(Number((statsRaw as Record<string, unknown>).fallbackChars))
+                ? Math.round(Number((statsRaw as Record<string, unknown>).fallbackChars))
+                : undefined,
+              joins: Number.isFinite(Number((statsRaw as Record<string, unknown>).joins))
+                ? Math.round(Number((statsRaw as Record<string, unknown>).joins))
+                : undefined
+            }
+          : undefined,
+      warnings,
+      seedUsed: Number.isFinite(seedUsed) ? Math.round(seedUsed) : undefined,
+      fallbackInfoAvailable: letters.length > 0
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function generateHandwritingViaFastApi(
   request: GenerateRequest
 ): Promise<GenerateResponse> {
@@ -338,8 +407,14 @@ export async function generateHandwritingViaLocalPython(
     "--debug-json",
     debugJsonPath
   ];
-  if (request.seed !== null) {
+  if (typeof request.seed === "number") {
     args.push("--seed", String(request.seed));
+  }
+  if (request.pageStyle) {
+    args.push("--page-style", String(request.pageStyle));
+  }
+  if (request.paperTexture) {
+    args.push("--paper-texture", String(request.paperTexture));
   }
   // Use classifier scoring by default when the model exists. Allow opt-out for faster local iteration.
   if (envString("HANDWRITE_LOCAL_USE_CLASSIFIER") !== "0") {
@@ -354,16 +429,16 @@ export async function generateHandwritingViaLocalPython(
     (await pathExists(letterModelWeightsPath));
 
   if (shouldUseLetterModel) {
-    args.push("--use-letter-model", "--letter-model-weights", letterModelWeightsPath);
+    args.push("--use-letter-model", "--letter-model-path", letterModelWeightsPath);
 
     if (typeof request.letterModelStyleStrength === "number") {
-      args.push("--letter-style-strength", String(request.letterModelStyleStrength));
+      args.push("--style-strength", String(request.letterModelStyleStrength));
     }
     if (typeof request.letterModelBaselineJitter === "number") {
       args.push("--baseline-jitter", String(request.letterModelBaselineJitter));
     }
     if (typeof request.letterModelWordSlant === "number") {
-      args.push("--word-slant", String(request.letterModelWordSlant));
+      args.push("--slant", String(request.letterModelWordSlant));
     }
     if (typeof request.letterModelRotationJitter === "number") {
       args.push("--letter-rot-jitter", String(request.letterModelRotationJitter));
@@ -390,14 +465,21 @@ export async function generateHandwritingViaLocalPython(
       });
     }
 
+    const stderrText = result.stderr.trim();
+    if (stderrText) {
+      console.info("[handwrite-local-python]", stderrText);
+    }
+
     const png = await readFile(outPath);
     const imageDataUrl = `data:image/png;base64,${png.toString("base64")}`;
 
+    const meta = await readDebugMeta(debugJsonPath);
     const response: GenerateResponse = {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       request: { ...request },
-      imageDataUrl
+      imageDataUrl,
+      ...(meta ? { meta } : {})
     };
 
     return generateResponseSchema.parse(response);

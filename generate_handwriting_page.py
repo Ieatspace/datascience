@@ -5,6 +5,8 @@ import csv
 import hashlib
 import json
 import secrets
+import sys
+from collections import defaultdict
 from pathlib import Path
 
 import cv2
@@ -27,6 +29,9 @@ STYLES = {
     "marker": dict(color=(38, 45, 56), opacity=0.92, rot=2.8, jx=1.3, jy=1.2, sj=0.06, gap=0.03, dil=1, blur=0.65, join=2, grain=False, bleed=0.15),
 }
 
+PAGE_STYLES = ("blank", "lined", "grid", "dot")
+PAPER_TEXTURES = ("off", "subtle", "med")
+
 _CACHE_KEY = None
 _CACHE_POOLS = None
 _LETTER_INFER_MOD = None
@@ -35,6 +40,10 @@ _LETTER_INFER_IMPORT_FAILED = False
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+def log_info(msg):
+    print(msg, file=sys.stderr, flush=True)
 
 
 def hash_seed(text, style, width, height, line_spacing):
@@ -53,15 +62,18 @@ def parse_args():
     p.add_argument("--height", type=int, required=True)
     p.add_argument("--line-spacing", type=float, required=True, dest="line_spacing")
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--page-style", choices=PAGE_STYLES, default="lined", dest="page_style")
+    p.add_argument("--paper-texture", choices=PAPER_TEXTURES, default="subtle", dest="paper_texture")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--json", action="store_true")
     p.add_argument("--debug-json", type=Path, default=None)
     p.add_argument("--use-classifier", action="store_true")
     p.add_argument("--use-letter-model", action="store_true")
-    p.add_argument("--letter-model-weights", type=Path, default=LETTER_MODEL_PATH)
-    p.add_argument("--letter-style-strength", type=float, default=1.0)
+    p.add_argument("--letter-model-path", "--letter-model-weights", type=Path, default=LETTER_MODEL_PATH, dest="letter_model_weights")
+    p.add_argument("--style-strength", "--letter-style-strength", type=float, default=1.0, dest="letter_style_strength")
     p.add_argument("--baseline-jitter", type=float, default=1.0)
-    p.add_argument("--word-slant", type=float, default=1.0)
+    p.add_argument("--slant", "--word-slant", type=float, default=1.0, dest="word_slant")
+    p.add_argument("--kerning", type=float, default=1.0)
     p.add_argument("--letter-rot-jitter", type=float, default=1.0)
     p.add_argument("--ink-variation", type=float, default=0.12)
     p.add_argument("--letter-model-min-samples", type=int, default=4)
@@ -75,7 +87,7 @@ def get_letter_infer_module():
     if _LETTER_INFER_IMPORT_FAILED:
         return None
     try:
-        from python_ai import infer as letter_infer
+        from python_ai.lettergen import infer as letter_infer
 
         _LETTER_INFER_MOD = letter_infer
         return _LETTER_INFER_MOD
@@ -90,6 +102,41 @@ def mask_bbox(mask):
         h, w = mask.shape[:2]
         return 0, 0, w, h
     return int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1
+
+
+def normalized_mask_signature(mask, out_size=24):
+    m = (mask > 20).astype(np.uint8) * 255
+    ys, xs = np.where(m > 0)
+    if xs.size == 0:
+        return None, None
+    x1, x2 = int(xs.min()), int(xs.max()) + 1
+    y1, y2 = int(ys.min()), int(ys.max()) + 1
+    crop = m[y1:y2, x1:x2]
+    h, w = crop.shape[:2]
+    if h <= 0 or w <= 0:
+        return None, None
+    scale = min((out_size - 4) / max(1.0, w), (out_size - 4) / max(1.0, h))
+    nw = max(1, int(round(w * scale)))
+    nh = max(1, int(round(h * scale)))
+    r = cv2.resize(crop, (nw, nh), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((out_size, out_size), np.uint8)
+    ox = (out_size - nw) // 2
+    oy = (out_size - nh) // 2
+    canvas[oy : oy + nh, ox : ox + nw] = (r > 20).astype(np.uint8) * 255
+    packed = np.packbits((canvas > 0).astype(np.uint8), axis=None).tobytes()
+    return packed, canvas
+
+
+def similarity_score(a_mask, b_mask):
+    if a_mask is None or b_mask is None:
+        return 0.0
+    a = a_mask > 0
+    b = b_mask > 0
+    same = float(np.mean(a == b))
+    inter = float(np.logical_and(a, b).sum())
+    union = float(np.logical_or(a, b).sum())
+    iou = inter / union if union > 0 else 1.0
+    return max(same, iou)
 
 
 def pair_kerning_adjust(prev_ch, ch, font_px):
@@ -369,15 +416,53 @@ def wrap_text(text, max_w, font_px, max_rows, pools):
     return rows, False
 
 
-def bg_page(width, height, baseline_step, top_pad, np_rng):
+def bg_page(width, height, baseline_step, top_pad, np_rng, page_style="lined", paper_texture="subtle"):
     c = np.full((height, width, 3), (248, 246, 240), np.uint8)
-    n = np_rng.normal(0, 2.0, size=(height, width, 1)).astype(np.float32)
-    c = np.clip(c.astype(np.float32) + n, 0, 255).astype(np.uint8)
-    y = top_pad + int(0.62 * baseline_step)
-    while y < height - 24:
-        cv2.line(c, (28, int(y)), (width - 28, int(y)), (228, 220, 204), 1, cv2.LINE_AA)
-        y += baseline_step
-    cv2.line(c, (56, 20), (56, height - 20), (210, 170, 170), 1, cv2.LINE_AA)
+    tex = str(paper_texture or "subtle").lower()
+    if tex not in PAPER_TEXTURES:
+        tex = "subtle"
+    noise_sigma = 0.0 if tex == "off" else (1.2 if tex == "subtle" else 2.4)
+    if noise_sigma > 0:
+        n = np_rng.normal(0, noise_sigma, size=(height, width, 1)).astype(np.float32)
+        c = np.clip(c.astype(np.float32) + n, 0, 255).astype(np.uint8)
+        speckles = max(25, (width * height) // (34000 if tex == "subtle" else 22000))
+        for _ in range(int(speckles)):
+            x = int(np_rng.integers(0, width))
+            y = int(np_rng.integers(0, height))
+            r = int(np_rng.integers(1, 2 if tex == "subtle" else 3))
+            col = int(np_rng.integers(235, 247))
+            cv2.circle(c, (x, y), r, (col, col, col), -1, cv2.LINE_AA)
+
+    style = str(page_style or "lined").lower()
+    if style not in PAGE_STYLES:
+        style = "lined"
+
+    x_l, x_r = 28, max(60, width - 28)
+    y_t, y_b = 20, max(40, height - 20)
+
+    if style in ("lined", "grid"):
+        y = top_pad + int(0.62 * baseline_step)
+        while y < height - 24:
+            cv2.line(c, (x_l, int(y)), (x_r, int(y)), (225, 232, 242), 1, cv2.LINE_AA)
+            y += baseline_step
+
+    if style == "grid":
+        grid_step = int(max(18, round(baseline_step)))
+        x = 28
+        while x < width - 28:
+            cv2.line(c, (int(x), y_t), (int(x), y_b), (230, 236, 244), 1, cv2.LINE_AA)
+            x += grid_step
+
+    if style == "dot":
+        dot_step_x = int(max(20, round(baseline_step)))
+        dot_step_y = int(max(18, round(baseline_step)))
+        start_y = top_pad + int(0.62 * baseline_step)
+        for y in range(int(start_y), height - 24, dot_step_y):
+            for x in range(28, width - 28, dot_step_x):
+                cv2.circle(c, (x, y), 1, (208, 216, 228), -1, cv2.LINE_AA)
+
+    if style in ("lined", "grid"):
+        cv2.line(c, (56, y_t), (56, y_b), (224, 176, 180), 1, cv2.LINE_AA)
     return c
 
 
@@ -511,11 +596,14 @@ def render(
     line_spacing,
     seed,
     use_classifier,
+    page_style="lined",
+    paper_texture="subtle",
     use_letter_model=False,
     letter_model_weights=None,
     letter_style_strength=1.0,
     baseline_jitter=1.0,
     word_slant=1.0,
+    kerning_strength=1.0,
     letter_rot_jitter=1.0,
     ink_variation=0.12,
     letter_model_min_samples=4,
@@ -524,6 +612,7 @@ def render(
 
     warnings = []
     warn_once = set()
+    LOWERCASE_CROP_FALLBACK = False
 
     try:
         pools = load_samples(use_classifier=use_classifier)
@@ -545,7 +634,8 @@ def render(
             letter_model_enabled = False
         else:
             try:
-                letter_runtime = letter_infer.load_generator(weights_path=weights_path)
+                letter_runtime = letter_infer.load_model(weights_path=weights_path)
+                log_info(f"USING LETTER GEN MODEL: {weights_path}")
             except Exception as exc:
                 warnings.append(f"Letter model load failed ({exc}); falling back to crop sampler")
                 letter_model_enabled = False
@@ -564,7 +654,7 @@ def render(
         last = rows[-1].rstrip()
         rows[-1] = ((last[:-1] if len(last) > 1 else last) + "...") if last else "..."
 
-    canvas = bg_page(width, height, step, pad_t, np_rng)
+    canvas = bg_page(width, height, step, pad_t, np_rng, page_style=page_style, paper_texture=paper_texture)
     stats = dict(
         rows=len(rows),
         handChars=0,
@@ -584,6 +674,10 @@ def render(
     else:
         global_median_bh = 46.0
     recent_by_char = {}
+    fallback_crop_logged = set()
+    seen_model_sigs_global = set()
+    seen_model_sigs_by_char = defaultdict(set)
+    recent_model_norms_by_char = defaultdict(list)
 
     for ri, row in enumerate(rows):
         baseline = pad_t + font_px + (ri * step) + float(py_rng.uniform(-0.4, 0.8))
@@ -612,22 +706,62 @@ def render(
             else:
                 baseline_walk = (baseline_walk * 0.72) + float(py_rng.uniform(-0.55, 0.55))
 
-            x += pair_kerning_adjust(prev_text_char, ch, font_px)
+            x += pair_kerning_adjust(prev_text_char, ch, font_px) * clamp(kerning_strength, 0.0, 3.0)
             baseline_corr = baseline_walk * clamp(baseline_jitter, 0.0, 3.0)
             placed = False
 
             if letter_model_enabled and ("a" <= ch <= "z") and letter_runtime is not None and letter_infer is not None:
                 try:
-                    glyph_seed = int(seed) + (ri * 10_003) + (ci * 137) + (ord(ch) * 7)
-                    gen = letter_infer.generate_glyph(
-                        letter=ch,
-                        seed=glyph_seed,
-                        style_strength=float(letter_style_strength),
-                        output_size=letter_runtime.image_size,
-                        runtime=letter_runtime,
-                        min_class_samples=int(letter_model_min_samples),
-                    )
-                    raw_patch = gen.alpha
+                    best_gen = None
+                    best_raw_patch = None
+                    best_sig = None
+                    best_norm = None
+                    best_dup_score = None
+                    max_tries = 6
+                    for attempt in range(max_tries):
+                        glyph_seed = int(np_rng.integers(0, 2_147_483_647))
+                        gen = letter_infer.generate_glyph(
+                            letter=ch,
+                            seed=glyph_seed,
+                            style_strength=float(letter_style_strength),
+                            output_size=letter_runtime.image_size,
+                            runtime=letter_runtime,
+                            min_class_samples=int(letter_model_min_samples),
+                        )
+                        raw_patch = gen.alpha
+                        sig_bytes, norm_mask = normalized_mask_signature(raw_patch, out_size=24)
+                        if sig_bytes is None:
+                            best_gen, best_raw_patch = gen, raw_patch
+                            best_sig, best_norm = sig_bytes, norm_mask
+                            break
+                        dup_global = sig_bytes in seen_model_sigs_global
+                        dup_char = sig_bytes in seen_model_sigs_by_char[ch]
+                        near_dup = False
+                        dup_score = 0.0
+                        if norm_mask is not None and recent_model_norms_by_char[ch]:
+                            sim_vals = [similarity_score(norm_mask, prev_norm) for prev_norm in recent_model_norms_by_char[ch]]
+                            dup_score = max(sim_vals) if sim_vals else 0.0
+                            near_dup = dup_score >= 0.95
+                        elif dup_char:
+                            dup_score = 1.0
+                        if (not dup_global) and (not dup_char) and (not near_dup):
+                            best_gen, best_raw_patch = gen, raw_patch
+                            best_sig, best_norm = sig_bytes, norm_mask
+                            break
+                        if best_gen is None or (best_dup_score is None) or dup_score < best_dup_score:
+                            best_gen, best_raw_patch = gen, raw_patch
+                            best_sig, best_norm = sig_bytes, norm_mask
+                            best_dup_score = dup_score
+                    if best_gen is None or best_raw_patch is None:
+                        raise RuntimeError("No model glyph candidate produced")
+
+                    gen = best_gen
+                    raw_patch = best_raw_patch
+                    if best_sig is not None:
+                        seen_model_sigs_global.add(best_sig)
+                        seen_model_sigs_by_char[ch].add(best_sig)
+                    if best_norm is not None:
+                        recent_model_norms_by_char[ch] = [best_norm, *recent_model_norms_by_char[ch]][:8]
                     x1g, y1g, x2g, y2g = mask_bbox(raw_patch)
                     bh = max(1, int(y2g - y1g))
                     letter_median_bh = letter_runtime.median_bh(ch)
@@ -696,7 +830,10 @@ def render(
                         warn_once.add(k)
                         warnings.append(f"Letter model fallback for '{ch}': {exc}")
 
-            if not placed and ("a" <= ch <= "z") and (ch in pools):
+            if not placed and ("a" <= ch <= "z") and (ch in pools) and LOWERCASE_CROP_FALLBACK:
+                if letter_model_enabled and ch not in fallback_crop_logged:
+                    fallback_crop_logged.add(ch)
+                    log_info(f"FALLBACK TO CROP SAMPLER for {ch}")
                 pool = pools[ch]
                 rec = recent_by_char.get(ch)
                 it = sample_pool_item(pool, np_rng, rec)
@@ -744,6 +881,11 @@ def render(
                 placed = True
 
             if not placed:
+                if "a" <= ch <= "z":
+                    log_key = f"typed:{ch}"
+                    if log_key not in fallback_crop_logged:
+                        fallback_crop_logged.add(log_key)
+                        log_info(f"FALLBACK TO TYPED GLYPH for {ch}")
                 patch, fb_base_ratio, fb_adv_ratio = fallback_patch(ch, font_px, style, np_rng)
                 patch = maybe_apply_ink_variation(patch, np_rng, ink_variation * 0.8)
                 px = int(round(x + py_rng.uniform(-0.25, 0.55)))
@@ -813,11 +955,14 @@ def main():
             float(a.line_spacing),
             seed,
             bool(a.use_classifier),
+            page_style=str(a.page_style),
+            paper_texture=str(a.paper_texture),
             use_letter_model=auto_use_letter_model,
             letter_model_weights=a.letter_model_weights,
             letter_style_strength=float(a.letter_style_strength),
             baseline_jitter=float(a.baseline_jitter),
             word_slant=float(a.word_slant),
+            kerning_strength=float(a.kerning),
             letter_rot_jitter=float(a.letter_rot_jitter),
             ink_variation=float(a.ink_variation),
             letter_model_min_samples=int(a.letter_model_min_samples),
